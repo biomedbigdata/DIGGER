@@ -1,6 +1,7 @@
 
 
 import os
+import re
 
 from django.conf import settings
 
@@ -11,17 +12,19 @@ import numpy as np
 import networkx as nx
 from django.urls import reverse
 
-
-PPI_human=exd.load_obj("PPI_human")
-g2d_human=exd.load_obj("g2d_human")
-
-PPI_mouse=exd.load_obj("PPI_mouse")
-g2d_mouse=exd.load_obj("g2d_mouse")
+PPI_all = {}
+g2d_all = {}
+data_all = {}
+for organism in os.listdir('domain/data'):
+    if not os.path.isdir('domain/data/' + organism):
+        continue
+    trivial_name = organism.split("[")[1][:-1]
+    PPI_all[trivial_name] = exd.load_obj(organism + '/PPI')
+    g2d_all[trivial_name] = exd.load_obj(organism + '/g2d')
+    data_all[trivial_name] = pd.read_csv('domain/data/' + organism + '/all_Proteins.csv')
 
 DDI=exd.load_obj("DDI")
 
-data_human = pd.read_csv( "domain/data/all_Proteins_human.csv")
-data_mouse = pd.read_csv( "domain/data/all_Proteins_mouse.csv")
 
 
 # --- Create folder
@@ -39,13 +42,8 @@ if not os.path.exists(jobs_networks_path):
 
 def Construct_network(proteins_id, missing,job_ID,organism):
 
-      #check organism for used files
-      if organism == "human":
-          PPI = PPI_human
-          g2d = g2d_human
-      elif organism == "mouse":
-          PPI = PPI_mouse
-          g2d = g2d_mouse
+      PPI = PPI_all[organism]
+      g2d = g2d_all[organism]
 
       E=[]
       N=[]
@@ -279,10 +277,7 @@ def Construct_network(proteins_id, missing,job_ID,organism):
 
         
 def analysis_input_isoforms(Inputs,organism):
-        if organism == "human":
-            g2d = g2d_human
-        elif organism == "mouse":
-            g2d = g2d_mouse
+        g2d = g2d_all[organism]
 
         filtred=filter_proteins_list(Inputs,organism)
         print('-----------filtred--------------')
@@ -349,12 +344,9 @@ def analysis_input_isoforms(Inputs,organism):
 
 
 def analysis_input_genes(Inputs,organism):
-    if organism == "human":
-        PPI = PPI_human
-        data = data_human
-    elif organism == "mouse":
-        PPI = PPI_mouse
-        data = data_mouse
+    PPI = PPI_all[organism]
+    data = data_all[organism]
+
     protein_id=[]
     missing={}
     for i in Inputs:
@@ -389,50 +381,35 @@ def analysis_input_genes(Inputs,organism):
 
 
 def pr_to_tr(pr,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     df_filter = data['Protein stable ID'].isin([pr])
     try: return data[df_filter]['Transcript stable ID'].unique()[0]
     except IndexError:
         return False
 
 def tr_to_gene(tr,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     df_filter = data['Transcript stable ID'].isin([tr])
     try: return data[df_filter]['Gene stable ID'].unique()[0]
     except IndexError:
         return False
 
 def ensembl_to_entrez(gene,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     df_filter = data['Gene stable ID'].isin([gene])
     try: return data[df_filter]['NCBI gene ID'].unique()[0]
     except IndexError:
         return False
     
 def entrez_to_ensembl(gene,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     df_filter = data['NCBI gene ID'].isin([gene])
     try: return data[df_filter]['Gene stable ID'].unique()[0]
     except IndexError:
         return False   
     
 def tr_to_domain(tr,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     df_filter = data['Transcript stable ID'].isin([tr])
     tdata=data[df_filter]
     tdata=tdata[tdata["Pfam ID"].notna()].drop_duplicates()
@@ -442,21 +419,14 @@ def tr_to_domain(tr,organism):
 
 #add to view
 def check_PPI_status(tr,organism):
-    if organism == "human":
-        PPI = PPI_human
-        data = data_human
-    elif organism == "mouse":
-        PPI = PPI_mouse
-        data = data_mouse
+    PPI = PPI_all[organism]
+    data = data_all[organism]
     df_filter = data['Transcript stable ID'].isin([tr])
     return PPI.has_node(data[df_filter]['NCBI gene ID'].astype('int').astype('str').unique()[0])
 
 
 def tr_is_coding(tr,organism):
-    if organism == "human":
-        data = data_human
-    elif organism == "mouse":
-        data = data_mouse
+    data = data_all[organism]
     return  len(data[data['Transcript stable ID'].isin([tr])])!=0
 
 def filter_proteins_list(List,organism):
@@ -469,13 +439,13 @@ def filter_proteins_list(List,organism):
         ftr=ftr.split("+")[0]
         #print(ftr)
         #make sure Correct ID
-        ftr=ftr[0:18]
+        # ftr=ftr[0:18]
         if ftr[0:3]=='ENS':
             
             #Check if protein coding
             
             #input is a protein and coverted successfully 
-            if ftr[3]=='P' or ftr[6]=='P':
+            if re.match(r"^ENS.*P\d+", ftr):
                 
                 tmp= pr_to_tr(ftr,organism)
                 
@@ -486,9 +456,9 @@ def filter_proteins_list(List,organism):
                             filtred_list.append(tmp)
                 
             #check if transcript is a coding protein
-            elif (ftr[3] == 'T' and tr_is_coding(ftr, organism) and check_PPI_status(ftr, organism)) or \
-                    (ftr[6] == 'T' and tr_is_coding(ftr, organism) and check_PPI_status(ftr, organism)):
-               filtred_list.append(ftr)
+            elif re.match(r"^ENS.*T\d+", ftr) and tr_is_coding(ftr,organism) and check_PPI_status(ftr,organism):
+                    filtred_list.append(ftr)
+
 
     return filtred_list
 

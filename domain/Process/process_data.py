@@ -11,6 +11,7 @@ import requests, sys
 from sqlalchemy import text
 
 from django.conf import settings
+from django.db import connection
 from domain.models import  Domain
 server = "http://rest.ensembl.org"
 cwd = os.getcwd()
@@ -37,8 +38,12 @@ def load_obj(name):
 
 
 #from Biomart":
-gid2name_human=load_obj("gid2name_human")
-gid2name_mouse=load_obj("gid2name_mouse")
+gid2name_all = {}
+for organism in os.listdir('domain/data'):
+    if not os.path.isdir('domain/data/' + organism):
+        continue
+    trivial_name = organism.split("[")[1][:-1]
+    gid2name_all[trivial_name] = load_obj(organism + '/gid2name')
 
 
 def entrez_to_name_online(entrezID):
@@ -48,11 +53,7 @@ def entrez_to_name_online(entrezID):
 
 
 def entrez_to_name(entrezID, organism):
-
-    if organism == "human":
-        return gid2name_human[entrezID]
-    elif organism == "mouse":
-        return gid2name_mouse[entrezID]
+    return gid2name_all[organism][entrezID]
 
 
 
@@ -95,10 +96,10 @@ def transcript(transcript_ID,organism):
 
 
 # cool function to search for all transcripts that contains a specific domain in the genome
-def domain_search(pfam_id):
+def domain_search(pfam_id, organism):
     query = """
             SELECT * 
-            FROM exons_to_domains_data 
+            FROM exons_to_domains_data_"""+organism+"""
             WHERE "Pfam ID"=:pfam_id 
             ORDER BY "Exon rank in transcript"
             """
@@ -138,13 +139,15 @@ def gene_to_all_transcripts(gene_ID,organism):
 
 def Domain_name(Pfam_id):
 
-    
-    
-	query=Domain.objects.filter(pfam_id=Pfam_id)
-	
-	if len(query)==0: return '-','-'
-	
-	else: return query[0].symbol,query[0].description
+    with connection.cursor() as cursor:
+        # currently this is only domain_domain_human since we only have human data
+        cursor.execute("SELECT symbol, Description FROM domain_domain_human WHERE pfam_id = %s", [Pfam_id])
+        row = cursor.fetchone()
+
+    if row is None:
+        return '-', '-'
+    else:
+        return row[0], row[1]
 
 
 

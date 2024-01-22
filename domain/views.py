@@ -1,10 +1,13 @@
 import os
 import pickle
 import random
+import re
+
 import pandas as pd
 
+from django.db import connection
 from django.conf import settings
-from django.http import HttpResponse
+from django.http import HttpResponse, JsonResponse
 from django.shortcuts import render, redirect
 from django.utils.html import escape
 from io import StringIO
@@ -19,8 +22,6 @@ from .Process import transcript as tr
 from .Process import InteractionView as iv
 from .Process import gene as  g
 from .Process import network_analysis as nt
-
-from .models import Gene, Domain, GeneMouse
 
 # --- Create folder
 # Global jobs path
@@ -98,9 +99,6 @@ def exon(request,organism,exon_ID):
                         edges_domainV=edges_domainV+e
                         switcher.append('<option value="'+pfams+'"> '+pfams+'</option>')
                         switcher_js.append('case "'+pfams+'": return node.source === "'+pfams+'";')
-
-
-
 
    else:
         nodes,edges,pd_interaction=[],[],[]
@@ -364,45 +362,26 @@ def isoform_level(request):
         # Get organism (human, mouse)
         organism = request.GET.get('organism', None)
 
-        # Search for human isoform
-        if organism == "human":
+        # Try and parse the search_query as gene name from the database
+        with connection.cursor() as cursor:
+            cursor.execute("""SELECT ensembl_id FROM domain_gene_"""+ organism + """ WHERE gene_symbol ILIKE %s""", [search_query])
+            row = cursor.fetchone()
 
-            # Try and parse the search_query as gene name from the database
-            query_set = Gene.objects.filter(gene_symbol__iexact=search_query)
+        if row:
+            search_query = row[0]
 
-            if query_set:
-                search_query = query_set[0].ensembl_id
+        search_query = search_query.split("+")[0]
+        search_query = search_query.split("%")[0]
+        search_query = search_query.split(".")[0]
+        print(search_query)
+        # regex to check if search query starts with ENS and ends with T or P
+        if re.match(r'ENS.*[T,P]\d+', search_query):
+            print("User input is a protein")
+            return redirect(transcript, P_id=search_query, organism=organism)
 
-            search_query = search_query.split("+")[0]
-            search_query = search_query.split("%")[0]
-            search_query = search_query.split(".")[0]
-            search_query = search_query[:15]
-            # Input search is a protein:
-            if search_query[:4] == 'ENST' or search_query[:4] == 'ENSP':
-                return redirect(transcript, P_id=search_query, organism=organism)
-                # return transcript(request,search_query)
-
-            # Input search is an exon:
-            elif len(search_query) == 15 and search_query[:4] == 'ENSG':
-                return redirect(gene, gene_ID=search_query, organism=organism)
-                # return gene(request,search_query)
-
-        # search for mouse isoform
-        elif organism == "mouse":
-            query_set = GeneMouse.objects.filter(gene_symbol__iexact=search_query)
-            if query_set:
-                search_query = query_set[0].ensembl_id
-
-            search_query = search_query.split("+")[0]
-            search_query = search_query.split("%")[0]
-            search_query = search_query.split(".")[0]
-            search_query = search_query[:18]
-
-            if search_query[:7] == 'ENSMUST' or search_query[:7] == 'ENSMUSP':
-                return redirect(transcript, P_id=search_query, organism=organism)
-
-            elif len(search_query) == 18 and search_query[:7] == 'ENSMUSG':
-                return redirect(gene, gene_ID=search_query, organism=organism)
+        elif re.match(r'ENS.*G\d+', search_query):
+            print("User input is a gene")
+            return redirect(gene, gene_ID=search_query, organism=organism)
 
     return render(request, 'setup/isoform_level.html', )
 
@@ -413,8 +392,6 @@ def isoform_level(request):
 
 def exon_level(request):
 
-
-
     if "search" in request.GET:     # If the form is submitted
       #Input and Exon ID
       print('-----------------------------------------------------------')
@@ -424,16 +401,10 @@ def exon_level(request):
       search_query=search_query.split("+")[0]
       search_query=search_query.split("%")[0]
       search_query=search_query.split(".")[0]
-      # search_query=search_query[:15]
-      search_query=search_query[:18]
+      print(search_query)
 
-      if  search_query[:4]=='ENSE':
-          return redirect(exon, organism=organism, exon_ID = search_query)
-          #return exon(request,search_query)
-
-      if  search_query[:7]=='ENSMUSE':
-          return redirect(exon, organism=organism, exon_ID = search_query)
-          #return exon(request,search_query)
+      if re.match(r'ENS.*[E]\d+', search_query):
+            return redirect(exon, organism=organism, exon_ID = search_query)
 
 
 
@@ -451,7 +422,8 @@ def exon_level(request):
         search_query=search_query.split(" ")
         search_query =[x for x in search_query if x!='']
         #search_query[0]=search_query[0].split(".")[0]
-        if len(search_query)==3 and  (len(search_query[0])==15 and search_query[0][:4]=='ENSG' or len(search_query[0])==18 and search_query[0][:7]=='ENSMUSG')   and search_query[1].isdigit() and search_query[2].isdigit():
+        if len(search_query)==3 and  re.match(r'ENS.*[G]\d+', search_query[0]) and \
+                search_query[1].isdigit() and search_query[2].isdigit():
 
             gene_ID=search_query[0]
             s1=int(search_query[1])
@@ -469,60 +441,29 @@ def exon_level(request):
                 else:
                     return HttpResponse("<h1>No match</h1>")
     if "search 3" in request.GET :     # If option 3 is selected
-        # ToDo Implement here :D
-
-
 
         # Get and sanitize the search_query
         search_query = request.GET['search 3'].strip()
         organism = request.GET.get('organism', None)
 
-        if organism=="human":
+        with connection.cursor() as cursor:
+            cursor.execute("""SELECT ensembl_id FROM domain_gene_"""+ organism + """ WHERE gene_symbol ILIKE %s""", [search_query])
+            row = cursor.fetchone()
 
-            # Try and parse the search_query as gene name from the database
-            query_set = Gene.objects.filter(gene_symbol__iexact=search_query)
-            if query_set:
-                search_query = query_set[0].ensembl_id
+        if row:
+            search_query = row[0]
 
-            search_query = search_query.split("+")[0]
-            search_query = search_query.split("%")[0]
-            search_query = search_query.split(".")[0]
-            search_query = search_query[:15]
+        search_query = search_query.split("+")[0]
+        search_query = search_query.split("%")[0]
+        search_query = search_query.split(".")[0]
 
-            # Input search is a protein:
-            if search_query[:4] == 'ENST' or search_query[:4] == 'ENSP':
-                return redirect(transcript, organism=organism, P_id=search_query)
+        # Input search is a protein:
+        if re.match(r'ENS.*[TP]\d+', search_query):
+            return redirect(transcript, organism=organism, P_id=search_query)
 
-
-            # Input search is an exon:
-            elif len(search_query) == 15 and search_query[:4] == 'ENSG':
-                return redirect(gene, organism=organism, gene_ID=search_query)
-
-        if organism=="mouse":
-
-            # Try and parse the search_query as gene name from the database
-            query_set = GeneMouse.objects.filter(gene_symbol__iexact=search_query)
-            if query_set:
-                search_query = query_set[0].ensembl_id
-
-            search_query = search_query.split("+")[0]
-            search_query = search_query.split("%")[0]
-            search_query = search_query.split(".")[0]
-            search_query = search_query[:18]
-
-            # Input search is a protein:
-            if search_query[:7] == 'ENSMUST' or search_query[:7] == 'ENSMUSP':
-                return redirect(transcript, organism=organism, P_id=search_query)
-
-
-            # Input search is an exon:
-            elif len(search_query) == 18 and search_query[:7] == 'ENSMUSG':
-                return redirect(gene, organism=organism, gene_ID=search_query)
-
-
-
-
-
+        # Input search is a gene:
+        elif re.match(r'ENS.*G\d+', search_query):
+            return redirect(gene, organism=organism, gene_ID=search_query)
 
     return render(request, 'setup/exon_level.html', )
 
@@ -546,19 +487,11 @@ def network(request):
 
         # max input IDs
         if 2000 > len(input_query) > 1:
-            if organism == "human":
-                if input_query[0][0:4] == 'ENSG' or input_query[0][0:4] == 'ENST' or input_query[0][0:4] == 'ENSP':
-                    job_num = str(random.randrange(500))
-                    with open(f'{jobs_path}/{job_num}.txt', "wb") as fp:  # Pickling
-                        pickle.dump(input_query, fp)
-                    return redirect(Multi_proteins, organism=organism, job=job_num)
+            if re.match(r'^ENS.*[GTP]', input_query[0]):
+                job_num = str(random.randrange(500))
+                with open(f'{jobs_path}/{job_num}.txt', "wb") as fp:
+                    pickle.dump(input_query, fp)
 
-            if organism == "mouse":
-                if input_query[0][0:7] == 'ENSMUSG' or input_query[0][0:7] == 'ENSMUST' or input_query[0][0:7] == 'ENSMUSP':
-                    job_num = str(random.randrange(500))
-                    with open(f'{jobs_path}/{job_num}.txt', "wb") as fp:  # Pickling
-                        pickle.dump(input_query, fp)
-                    return redirect(Multi_proteins, organism=organism, job=job_num)
 
     # Option 2: Upload file
     if "option2" in request.POST and 'gene-count-file' in request.FILES:
@@ -587,16 +520,12 @@ def network(request):
 
             # Kevin: Zakaria please insert the magic down below:)
             # Zaka: And this is where the magic happens :p
+            # Elias: lets hope this magic still works after I changed the format checking
 
             # Check if the first row corresponds to transcript Ensembl IDs
-            if organism=="human":
-                if not (str(transcript_count_df.iloc[0, 0]).startswith('ENST') or str(transcript_count_df.iloc[1, 0]).startswith('ENST')):
-                    error_message_suffix = f"must have Ensembl transcript IDs in the first column starting with \"ENST\""
-                    raise RuntimeError
-            if organism=="mouse":
-                if not (str(transcript_count_df.iloc[0, 0]).startswith('ENSMUST') or str(transcript_count_df.iloc[1, 0]).startswith('ENSMUST')):
-                    error_message_suffix = f"must have Ensembl transcript IDs in the first column starting with \"ENSMUST\""
-                    raise RuntimeError
+            if not (re.match(r'^ENS.*T', transcript_count_df.iloc[0, 0]) or re.match(r'^ENS.*T', transcript_count_df.iloc[1, 0])):
+                error_message_suffix = f"must have Ensembl transcript IDs in the first column starting with \"ENST\""
+                raise RuntimeError
 
             # --- Try parsing counts for the different options (search for FPKM, tpm or counts)
             # max_isoforms: the max number of isoforms to consider:
@@ -651,11 +580,10 @@ def Multi_proteins(request, organism, job='0'):
             inputs = pickle.load(fp)
 
 
-    if inputs[0][0:4]=='ENSG' or inputs[0][0:7]=='ENSMUSG':
+    if re.match(r'^ENS.*[G]', inputs[0]):
        info=nt.analysis_input_genes(inputs,organism)
 
-    elif inputs[0][0:4]=='ENSG' or inputs[0][0:4]=='ENST' or inputs[0][0:4]=='ENSP' or\
-            inputs[0][0:7]=='ENSMUSG' or inputs[0][0:7]=='ENSMUST' or inputs[0][0:7]=='ENSMUSP':
+    elif re.match(r'^ENS.*[GTP]', inputs[0]):
           info=nt.analysis_input_isoforms(inputs,organism)
     else:
            return HttpResponse("<h1>wrong entry</h1>")
@@ -690,3 +618,20 @@ def Multi_proteins(request, organism, job='0'):
 
     return render(request, 'visualization/network.html', context)
 
+
+
+def get_organisms(request):
+    directory_path = os.path.join(settings.PROJECT_ROOT, 'domain/data')
+
+    if os.path.exists(directory_path) and os.path.isdir(directory_path):
+        organisms = os.listdir(directory_path)
+        true_organisms = []
+        trivial_names = []
+        for orga in organisms:
+            if not os.path.isdir(os.path.join(directory_path, orga)):
+                continue
+            true_organisms.append(orga.split("[")[0])
+            trivial_names.append(orga.split("[")[1][:-1])
+        return JsonResponse({'organisms': true_organisms, 'trivial_names': trivial_names})
+    else:
+        return JsonResponse({'organisms': [], 'trivial_names': []})
