@@ -29,9 +29,9 @@ if not os.path.exists(jobs_path):
     os.makedirs(jobs_path)
 
 
-
 # Display transcripts of a gene
 def gene(request, gene_ID, organism):
+    print("Currently in gene view")
     transcript_table, gene_name = g.input_gene(gene_ID, organism)
 
     if transcript_table == []:
@@ -42,6 +42,40 @@ def gene(request, gene_ID, organism):
         'name': gene_name,
     }
     return render(request, 'visualization/gene.html', context)
+
+
+def multiple_queries(request, inputs, organism):
+    print("Currently in multiple queries view")
+    # retrieve get data from the form which (for now is only gene names)
+    input_names = [x.strip() for x in inputs.split(",")]
+    print(input_names)
+    transcript_table = ""
+
+    for query in input_names:
+        try:
+            if re.match(r'ENS\w*E\d+$', query):
+                print("Checking exon")
+                transcript_table += ex.exon_table(query, organism)
+            elif re.match(r'ENS\w*T\d+$', query):
+                transcript_table += tr.transcript_table(query, organism)
+            elif re.match(r'ENS\w*P\d+$', query):
+                transcript_table += tr.transcript_table(query, organism, True)
+            else:
+                with connection.cursor() as cursor:
+                    cursor.execute("""SELECT ensembl_id FROM domain_gene_""" + organism + """ WHERE gene_symbol ILIKE %s""",
+                                   [query])
+                    row = cursor.fetchone()
+                    if row:
+                        query = row[0]
+                    transcript_table += g.input_gene(query, organism)[0]
+        except Exception as e:
+            print(e)
+            continue
+
+    context = {
+        'tb': transcript_table,
+    }
+    return render(request, 'visualization/multiple_queries.html', context)
 
 
 # Display information of an exon (Exon-Level Analysis)
@@ -55,7 +89,6 @@ def exon(request, organism, exon_ID):
         _, domains, gene_name, Ensemble_geneID, entrezID, tb_transc, table_domains, number = v
 
     # only if the exon code for domains with known interactions
-
     nodes_domainV = {}
     edges_domainV = {}
     switcher = []
@@ -65,11 +98,10 @@ def exon(request, organism, exon_ID):
 
     # Interactionview
     Interactiveview_select = {}
-    Interactiveview_switch = []
     first_victim = []
+    first_name = ""
 
     if number > 0:
-
         # ProteinView
         nodes, edges, pd_interaction = ex.vis_exon(domains, entrezID, gene_name, exon_ID, organism)
 
@@ -111,32 +143,14 @@ def exon(request, organism, exon_ID):
             pd_interaction.loc[f, 'Residue evidence'] = '<center>&#9989;</center>'
 
         # InteractionView
-        pd_interaction['_'] = 'Interaction with &nbsp;&nbsp;' + pd_interaction[
-            "Partner Protein"] + '&nbsp;&nbsp; ( Score ' + pd_interaction["Score"].round(2).astype(str) + ' )'
+        pd_interaction['_'] = pd_interaction["Partner Protein"]
 
-        pd_interaction['selector'] = '<option value="' + pd_interaction['NCBI gene ID'].astype(str) + '"> ' + \
-                                     pd_interaction['_'] + '</option>'
+        # This also affects the pd_interaction dataframe, watch out
+        Interactiveview_select = pr.interactive_select(pd_interaction)
 
-        pd_interaction['switcher'] = 'case "' + pd_interaction['NCBI gene ID'].astype(
-            str) + '": return (node.id === "' + pd_interaction['NCBI gene ID'].astype(
-            str) + '")   || (node.id === "' + entrezID + '")     ||  (node.origin==="' + pd_interaction[
-                                         'NCBI gene ID'].astype(str) + '") ||  (node.origin==="' + entrezID + '")  ;'
-
-        # set interactive view select box by confidence
-        tmp_interactive_select = {k.capitalize(): v.tolist() for k, v in
-                                  pd_interaction.groupby('Confidence')['selector']}
-        for key in tmp_interactive_select.keys():
-            if key != 'Original':
-                Interactiveview_select[key + ' confidence'] = tmp_interactive_select[key]
-            else:
-                Interactiveview_select[key] = tmp_interactive_select[key]
-        order = {'Original': 3, 'High confidence': 2, 'Mid confidence': 1, 'Low confidence': 0}
-        Interactiveview_select = dict(
-            sorted(Interactiveview_select.items(), key=lambda x: order.get(x[0], 0), reverse=True))
-
-        Interactiveview_switch = pd_interaction['switcher'].tolist()
-        # the first protein to show
-        first_victim = pd_interaction['NCBI gene ID'].tolist()[0]
+        # the first protein to show, select a protein with confidence original
+        first_victim = pd_interaction[pd_interaction['Confidence'] == 'Original']['NCBI gene ID'].tolist()[0]
+        first_name = pd_interaction[pd_interaction['Confidence'] == 'Original']['_'].tolist()[0]
 
         pd_interaction = pd_interaction[
             ["Affected Protein", 'Partner Protein', 'NCBI gene ID', 'Retained DDIs', 'Lost DDIs',
@@ -149,7 +163,8 @@ def exon(request, organism, exon_ID):
             "Retained DDIs": "Retained domain-domain interactions",
             "Lost DDIs": "Missing domain-domain interactions",
             "Protein-protein interaction": "Protein-protein interaction",
-            'Residue evidence': 'Residue-level evidence*'
+            'Residue evidence': 'Residue-level evidence*',
+            "Score": "% of retained DDIs",
         })
 
         pd_interaction = pd_interaction.to_html(table_id='Interaction_table', **settings.TO_HTML_RESPONSIVE_PARAMETERS)
@@ -186,7 +201,7 @@ def exon(request, organism, exon_ID):
 
         'Interactiveview_select': Interactiveview_select,
         'first_vict': first_victim,
-        'Interactiveview_switch': Interactiveview_switch,
+        'first_name': first_name,
 
         'enable_Proteinview': len(edges_domainV.get('original')) > 70 if edges_domainV.get('original') else True
 ,
@@ -208,41 +223,23 @@ def transcript(request, P_id, organism):
 
     # Interactionview
     Interactiveview_select = {}
-    Interactiveview_switch = []
     first_victim = []
+    first_name = []
 
     if len(pd_interaction) != 0:
         pd_interaction['Residue evidence'] = ''
 
         pd_interaction.loc[
-            pd_interaction["NCBI gene ID"].isin(co_partners), 'Residue evidence'] = '<span>&#9733;</span>'
+            pd_interaction["NCBI gene ID"].isin(co_partners), 'Residue evidence'] = '★'
 
         pd_interaction = pd_interaction.sort_values('Protein name')
-        pd_interaction['_'] = '&nbsp;Interaction &nbsp; with &nbsp;' + pd_interaction[
-            "Protein name"] + '&nbsp;&nbsp; ( Score ' + pd_interaction["Score"].round(2).astype(str) + ')&nbsp;&nbsp;' + \
-                              pd_interaction['Residue evidence'] + '&nbsp;&nbsp;'
+        pd_interaction['_'] = pd_interaction['Protein name'] + " " + pd_interaction['Residue evidence']
 
-        pd_interaction['selector'] = '<option value="' + pd_interaction['NCBI gene ID'].astype(str) + '"> ' + \
-                                     pd_interaction['_'] + '</option>'
+        Interactiveview_select = pr.interactive_select(pd_interaction)
 
-        pd_interaction['switcher'] = 'case "' + pd_interaction['NCBI gene ID'].astype(
-            str) + '": return (node.id === "' + pd_interaction['NCBI gene ID'].astype(
-            str) + '")   || (node.id === "' + entrezID + '")     ||  (node.origin==="' + pd_interaction[
-                                         'NCBI gene ID'].astype(str) + '") ||  (node.origin==="' + entrezID + '")  ;'
-
-        # dicitionary to display the select box in the interaction view with the prediction confidences, sorted and named appropriately
-        tmp_interactive_select = {k.capitalize(): v.tolist() for k, v in pd_interaction.groupby('Confidence')['selector']}
-        for key in tmp_interactive_select.keys():
-            if key != 'Original':
-                Interactiveview_select[key + ' confidence'] = tmp_interactive_select[key]
-            else:
-                Interactiveview_select[key] = tmp_interactive_select[key]
-        order = {'Original': 3, 'High confidence': 2, 'Mid confidence': 1, 'Low confidence': 0}
-        Interactiveview_select = dict(sorted(Interactiveview_select.items(), key=lambda x: order.get(x[0], 0), reverse=True))
-
-        Interactiveview_switch = pd_interaction['switcher'].tolist()
-        # the first protein to show
-        first_victim = pd_interaction['NCBI gene ID'].tolist()[0]
+        # the first protein to show, select a protein with confidence original
+        first_victim = pd_interaction[pd_interaction['Confidence'] == 'Original']['NCBI gene ID'].tolist()[0]
+        first_name = pd_interaction[pd_interaction['Confidence'] == 'Original']['_'].tolist()[0]
 
         pd_interaction = pd_interaction.rename(columns={
 
@@ -251,19 +248,21 @@ def transcript(request, P_id, organism):
             "Percentage of lost domain-domain interactions": "% of missing DDIs",
             "Retained DDIs": "Retained domain-domain interactions",
             "Lost DDIs": "Missing domain-domain interactions",
-            "Protein-protein interaction": "Protein-protein interaction"
+            "Protein-protein interaction": "Protein-protein interaction",
+            "Score": "% of retained DDIs",
         })
 
         pd_interaction = pd_interaction[
             ["Selected Protein variant", 'Partner Protein', 'NCBI gene ID', 'Retained domain-domain interactions',
              'Missing domain-domain interactions', '% of missing DDIs', 'Residue-level evidence',
-             "Protein-protein interaction", 'Score', 'Confidence']]
+             "Protein-protein interaction", '% of retained DDIs', 'Confidence']]
         pd_interaction = pd_interaction.to_html(table_id='Interaction_table', **settings.TO_HTML_RESPONSIVE_PARAMETERS)
 
     # Get ID of missing domains with interactions
     if len(missed) != 0:
         missing_domains = missed['Pfam ID'].unique()
         missed = missed.to_html(**settings.TO_HTML_PARAMETERS)
+
 
     nodes_domainV = {}
     edges_domainV = {}
@@ -342,7 +341,7 @@ def transcript(request, P_id, organism):
 
         'Interactiveview_select': Interactiveview_select,
         'first_vict': first_victim,
-        'Interactiveview_switch': Interactiveview_switch,
+        'first_name': first_name,
 
         'first_domain': first,
         'switch1': switcher,
@@ -367,6 +366,11 @@ def isoform_level(request):
         # Get organism (human, mouse)
         organism = request.GET.get('organism', None)
 
+        # allow user to input multiple queries separated by commas
+        multiple = search_query.split(",")
+        if len(multiple) > 1:
+            return redirect(multiple_queries, inputs=search_query, organism=organism)
+
         # Try and parse the search_query as gene name from the database
         with connection.cursor() as cursor:
             cursor.execute("""SELECT ensembl_id FROM domain_gene_""" + organism + """ WHERE gene_symbol ILIKE %s""",
@@ -379,6 +383,7 @@ def isoform_level(request):
         search_query = search_query.split("+")[0]
         search_query = search_query.split("%")[0]
         search_query = search_query.split(".")[0]
+
         # regex to check if search query starts with ENS and ends with T or P
         if re.match(r'ENS\w*[T,P]\d+$', search_query):
             print("User input is a protein")
@@ -404,6 +409,11 @@ def exon_level(request):
         search_query = search_query.split(".")[0]
         print(search_query)
 
+        # allow user to input multiple queries separated by commas
+        multiple = search_query.split(",")
+        if len(multiple) > 1:
+            return redirect(multiple_queries, inputs=search_query, organism=organism)
+
         if re.match(r'ENS\w*[E]\d+$', search_query):
             return redirect(exon, organism=organism, exon_ID=search_query)
 
@@ -415,6 +425,10 @@ def exon_level(request):
         print('-----------------------------------------------------------')
         search_query = request.GET['search 2']
         organism = request.GET.get('organism', None)
+
+        multiple = search_query.split(",")
+        if len(multiple) > 1:
+            search_query = multiple[0]
 
         search_query = search_query.split(" ")
         search_query = [x for x in search_query if x != '']
@@ -442,6 +456,11 @@ def exon_level(request):
         # Get and sanitize the search_query
         search_query = request.GET['search 3'].strip()
         organism = request.GET.get('organism', None)
+
+        # allow user to input multiple queries separated by commas
+        multiple = search_query.split(",")
+        if len(multiple) > 1:
+            return redirect(multiple_queries, inputs=search_query, organism=organism)
 
         with connection.cursor() as cursor:
             cursor.execute("""SELECT ensembl_id FROM domain_gene_""" + organism + """ WHERE gene_symbol ILIKE %s""",

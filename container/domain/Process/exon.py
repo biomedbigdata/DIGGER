@@ -147,7 +147,7 @@ def vis_exon(missing_domain, entrezID, gene_name, ExonID, organism):
     pd_interaction["Percentage of lost domain-domain interactions"] = pd_interaction[
         "Percentage of lost domain-domain interactions"].astype(int)
 
-    pd_interaction["Score"] = (1 - ((pd_interaction["Percentage of lost domain-domain interactions"] / 100)))
+    pd_interaction["Score"] = (100 - ((pd_interaction["Percentage of lost domain-domain interactions"])))
 
     pd_interaction.drop(columns=['Lost DDIs', 'Retained DDIs']).to_csv(f'{table_path}/{ExonID}.csv', index=False, )
     pd_interaction = pd_interaction.drop(columns=['retained DDIs', 'missing DDIs'])
@@ -255,3 +255,33 @@ def tr_to_names(list_tr, organism):
 
         names.append(name)
     return names
+
+
+def exon_table(exon_ID, organism):
+    print("getting exon info")
+    query = """
+    SELECT * 
+    FROM exons_to_domains_data_""" + organism + """ 
+    WHERE "Exon stable ID"=:exon_ID 
+    ORDER BY "Exon rank in transcript"
+    """
+    tb = pd.read_sql_query(sql=text(query), con=engine, params={'exon_ID': exon_ID})
+
+    transcripts = tb['Transcript stable ID'].unique()
+
+    if len(transcripts) == 0:
+        # ID not found in the database
+        return ""
+
+    _, gene_name, _, _, _ = pr.tranID_convert(transcripts[0], organism)
+
+    # unique pfams in the exon
+    unique_pfams = tb['Pfam ID'].unique()
+    unique_pfams = unique_pfams[~pd.isnull(unique_pfams)]
+    unique_pfams = [f'<a href="https://www.ebi.ac.uk/interpro/entry/pfam/{pfam}" target="_blank">{pfam}</a>' for pfam in
+                    unique_pfams]
+    visualize_link = reverse('home') + f"ID/exon/{organism}/{exon_ID}/"
+    viz = f'<a href="{visualize_link}" target="_blank">Visualize</a>'
+    unique_pfams = ', '.join(unique_pfams)
+    return pd.DataFrame({'Gene': [gene_name], '# associated Transcripts': [len(transcripts)],
+                         'Pfam domain(s)': [unique_pfams], 'Link': [viz]}).to_html(**settings.TO_HTML_PARAMETERS)
